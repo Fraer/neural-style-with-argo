@@ -1,0 +1,107 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: neural-style-transfer-
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: workdir
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 2Gi
+
+  entrypoint: main
+
+  templates:
+  - name: main
+    steps: 
+    - - name: fetch-video
+        template: fetch-video
+    - - name: fnst-server
+        template: fnst-server
+    - - name: process-files
+        template: process-files
+        arguments:
+          parameters:
+          - name: server-ip
+            value: "{{steps.fnst-server.ip}}"
+    - - name: create-video
+        template: create-video 
+    - - name: upload-video
+        template: upload-video
+
+  - name: fetch-video
+    inputs:
+      # parameters:
+      # - name: server-ip
+    container:
+      image: mikenye/youtube-dl:latest
+      command: ["/bin/sh", "-c"]
+      args: 
+        - echo Fetching video from youtube;
+          chmod 777 /workdir;
+          rm -rf /workdir/lost+found;
+          mkdir /workdir/input;
+          ls -al .; 
+          /init q6xQhChOAVI;
+          echo Extracting frames from video;
+          for i in *; do ffmpeg -r 1 -i "$i" -r 1 "/workdir/input/$filename%03d.jpeg"; done;
+          ls -al /workdir/input;
+      volumeMounts:
+        - name: workdir
+          mountPath: "/workdir"
+
+
+  - name: fnst-server
+    daemon: true
+    container:
+      image: codait/max-fast-neural-style-transfer:latest
+      readinessProbe:
+        httpGet:
+          path: /
+          port: 5000
+        initialDelaySeconds: 2
+        timeoutSeconds: 1
+
+  - name: process-files
+    inputs:
+      parameters:
+      - name: server-ip  
+    container:
+      image: appropriate/curl:latest
+      command: ["/bin/sh", "-c"]
+      args: 
+        - echo Processing files in shared dir;
+          mkdir /workdir/output;
+          cd /workdir/input;
+          for i in *; do echo "Submitting $i"; curl -F "image=@/workdir/input/$i" -XPOST "http://{{inputs.parameters.server-ip}}:5000/model/predict?model=udnie" > "/workdir/output/$i" ; echo "Processed $i"; done;
+          ls -al /workdir/output;
+      volumeMounts:
+        - name: workdir
+          mountPath: "/workdir"
+
+  - name: create-video
+    container:
+      image: mikenye/youtube-dl:latest
+      command: ["/bin/sh", "-c"]
+      args: 
+        - echo Creating video from processed files;
+          ffmpeg -framerate 18 -y -nostats -loglevel 16 -i /workdir/output/%*.jpeg -an /workdir/video.mp4;
+          ls -al /workdir;
+      volumeMounts:
+        - name: workdir
+          mountPath: "/workdir"
+
+
+  - name: upload-video
+    container:
+      image: appropriate/curl:latest
+      command: ["/bin/sh", "-c"]
+      args: 
+        - echo Uploading video to file.io;
+          curl -F "file=@/workdir/video.mp4" https://file.io;
+      volumeMounts:
+        - name: workdir
+          mountPath: "/workdir"
